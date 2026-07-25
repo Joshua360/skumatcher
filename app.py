@@ -182,25 +182,16 @@ def extract_year_from_sku(fullsku):
 
 def audit_match(row):
     invoice_desc = str(row.get("InvoiceDescription", "")).strip()
-    invoice_code = str(row.get("InvoiceCode", "")).strip().upper()
     matched_sku = str(row.get("MatchedFullSKU", "")).strip().upper()
 
     invoice_vintage = extract_year_from_text(invoice_desc)
     sku_vintage = extract_year_from_sku(matched_sku)
 
-    if matched_sku == "" or matched_sku.lower() == "nan" or matched_sku == "NONE":
-        return "No FullSKU matched"
-
-    sku_code = sku_prefix(matched_sku)
-
-    if invoice_code and sku_code and invoice_code != sku_code:
-        return f"SKU prefix mismatch: invoice code is {invoice_code} but matched SKU prefix is {sku_code}"
-
+    # Only warn when invoice description has a vintage year,
+    # matched SKU also has a vintage year,
+    # and the two years are different.
     if invoice_vintage and sku_vintage and invoice_vintage != sku_vintage:
         return f"Vintage mismatch: invoice has {invoice_vintage} but matched SKU has {sku_vintage}"
-
-    if invoice_vintage and not sku_vintage:
-        return f"Possible vintage missing in SKU: invoice has {invoice_vintage}"
 
     return ""
 
@@ -258,7 +249,7 @@ if uploaded_file is not None:
                     product_data=product_data
                 )
 
-                # Audit columns for identifying suspicious matches
+                # Audit columns for identifying only true vintage mismatches
                 invoice_data["InvoiceVintage"] = invoice_data["InvoiceDescription"].apply(extract_year_from_text)
                 invoice_data["MatchedSKUVintage"] = invoice_data["MatchedFullSKU"].apply(extract_year_from_sku)
                 invoice_data["MatchWarning"] = invoice_data.apply(audit_match, axis=1)
@@ -279,18 +270,18 @@ if uploaded_file is not None:
                 col1.metric("Total Records", total_records)
                 col2.metric("Matched Records", matched_records)
                 col3.metric("Unmatched Records", unmatched_records)
-                col4.metric("Warnings", suspicious_count)
+                col4.metric("Vintage Warnings", suspicious_count)
 
                 if suspicious_count > 0:
                     st.warning(
-                        f"{suspicious_count} suspicious match(es) found. "
-                        "Review the MatchWarning column before using the final file."
+                        f"{suspicious_count} vintage mismatch(es) found. "
+                        "Review these before using the final file."
                     )
 
-                    st.subheader("Suspicious Matches")
+                    st.subheader("Vintage Mismatch Warnings")
                     st.dataframe(suspicious_matches, use_container_width=True)
                 else:
-                    st.success("No suspicious matches found.")
+                    st.success("No vintage mismatches found.")
 
                 st.subheader("Matched Results Preview")
                 st.dataframe(invoice_data.head(50), use_container_width=True)
@@ -312,3 +303,4 @@ if uploaded_file is not None:
 
     except Exception as e:
         st.error(f"Something went wrong: {e}")
+        
