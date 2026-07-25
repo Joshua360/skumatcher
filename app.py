@@ -1,10 +1,12 @@
 import streamlit as st
 import pandas as pd
 import re
+import os
 from io import BytesIO
 
 
-PRODUCT_FILE = "AllProductsList.xlsx"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PRODUCT_FILE = os.path.join(BASE_DIR, "AllProductsList.xlsx")
 
 
 st.set_page_config(
@@ -24,6 +26,12 @@ def load_product_data():
 
     product_data.columns = product_data.columns.str.strip()
 
+    required_columns = ["BaseDescription", "FullSKU"]
+    missing_columns = [col for col in required_columns if col not in product_data.columns]
+
+    if missing_columns:
+        raise ValueError(f"Product file is missing required columns: {missing_columns}")
+
     product_data["BaseDescription"] = product_data["BaseDescription"].astype(str).str.strip()
     product_data["FullSKU"] = product_data["FullSKU"].astype(str).str.strip().str.upper()
 
@@ -31,23 +39,23 @@ def load_product_data():
 
 
 def has_vintage_year(description):
-    return re.search(r"\b(19|20)\d{2}\b", description) is not None
+    return re.search(r"\b(19|20)\d{2}\b", str(description)) is not None
 
 
 def get_vintage_year(description):
-    match = re.search(r"\b(19|20)\d{2}\b", description)
+    match = re.search(r"\b(19|20)\d{2}\b", str(description))
     return match.group(0) if match else None
 
 
 def remove_vintage_year(description):
-    return re.sub(r"\b(19|20)\d{2}\b", "", description).strip()
+    return re.sub(r"\b(19|20)\d{2}\b", "", str(description)).strip()
 
 
 def remove_last_word(description):
-    parts = description.split()
+    parts = str(description).split()
 
     if len(parts) <= 1:
-        return description, ""
+        return str(description), ""
 
     removed_value = parts[-1]
     new_description = " ".join(parts[:-1])
@@ -90,6 +98,9 @@ def choose_by_invoice_code(matches, invoice_code):
 def choose_by_invoice_code_and_value(matches, invoice_code, required_value):
     invoice_code = str(invoice_code).strip().upper()
     required_value = str(required_value).strip().upper()
+
+    if not required_value:
+        return None
 
     filtered = matches[
         (matches["FullSKU"].apply(lambda x: sku_prefix(x) == invoice_code)) &
@@ -157,6 +168,43 @@ def match_invoice_line(row, product_data):
     return None
 
 
+def extract_year_from_text(text):
+    text = str(text)
+    match = re.search(r"\b(19|20)\d{2}\b", text)
+    return match.group(0) if match else ""
+
+
+def extract_year_from_sku(fullsku):
+    fullsku = str(fullsku)
+    match = re.search(r"\b(19|20)\d{2}\b", fullsku)
+    return match.group(0) if match else ""
+
+
+def audit_match(row):
+    invoice_desc = str(row.get("InvoiceDescription", "")).strip()
+    invoice_code = str(row.get("InvoiceCode", "")).strip().upper()
+    matched_sku = str(row.get("MatchedFullSKU", "")).strip().upper()
+
+    invoice_vintage = extract_year_from_text(invoice_desc)
+    sku_vintage = extract_year_from_sku(matched_sku)
+
+    if matched_sku == "" or matched_sku.lower() == "nan" or matched_sku == "NONE":
+        return "No FullSKU matched"
+
+    sku_code = sku_prefix(matched_sku)
+
+    if invoice_code and sku_code and invoice_code != sku_code:
+        return f"SKU prefix mismatch: invoice code is {invoice_code} but matched SKU prefix is {sku_code}"
+
+    if invoice_vintage and sku_vintage and invoice_vintage != sku_vintage:
+        return f"Vintage mismatch: invoice has {invoice_vintage} but matched SKU has {sku_vintage}"
+
+    if invoice_vintage and not sku_vintage:
+        return f"Possible vintage missing in SKU: invoice has {invoice_vintage}"
+
+    return ""
+
+
 def convert_df_to_excel(df):
     output = BytesIO()
 
@@ -210,16 +258,39 @@ if uploaded_file is not None:
                     product_data=product_data
                 )
 
+                # Audit columns for identifying suspicious matches
+                invoice_data["InvoiceVintage"] = invoice_data["InvoiceDescription"].apply(extract_year_from_text)
+                invoice_data["MatchedSKUVintage"] = invoice_data["MatchedFullSKU"].apply(extract_year_from_sku)
+                invoice_data["MatchWarning"] = invoice_data.apply(audit_match, axis=1)
+
                 total_records = len(invoice_data)
                 matched_records = invoice_data["MatchedFullSKU"].notna().sum()
                 unmatched_records = invoice_data["MatchedFullSKU"].isna().sum()
 
+                suspicious_matches = invoice_data[
+                    invoice_data["MatchWarning"].astype(str).str.strip() != ""
+                ]
+
+                suspicious_count = len(suspicious_matches)
+
                 st.success("Matching complete.")
 
-                col1, col2, col3 = st.columns(3)
+                col1, col2, col3, col4 = st.columns(4)
                 col1.metric("Total Records", total_records)
                 col2.metric("Matched Records", matched_records)
                 col3.metric("Unmatched Records", unmatched_records)
+                col4.metric("Warnings", suspicious_count)
+
+                if suspicious_count > 0:
+                    st.warning(
+                        f"{suspicious_count} suspicious match(es) found. "
+                        "Review the MatchWarning column before using the final file."
+                    )
+
+                    st.subheader("Suspicious Matches")
+                    st.dataframe(suspicious_matches, use_container_width=True)
+                else:
+                    st.success("No suspicious matches found.")
 
                 st.subheader("Matched Results Preview")
                 st.dataframe(invoice_data.head(50), use_container_width=True)
