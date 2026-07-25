@@ -175,8 +175,13 @@ def extract_year_from_text(text):
 
 
 def extract_year_from_sku(fullsku):
-    fullsku = str(fullsku)
-    match = re.search(r"\b(19|20)\d{2}\b", fullsku)
+    fullsku = str(fullsku).upper()
+
+    # Important:
+    # Do not use word boundaries here because SKUs look like LMCAS-2020IBMK.
+    # In that case, 2020 is followed by letters, so \b would fail.
+    match = re.search(r"(19|20)\d{2}", fullsku)
+
     return match.group(0) if match else ""
 
 
@@ -187,9 +192,10 @@ def audit_match(row):
     invoice_vintage = extract_year_from_text(invoice_desc)
     sku_vintage = extract_year_from_sku(matched_sku)
 
-    # Only warn when invoice description has a vintage year,
-    # matched SKU also has a vintage year,
-    # and the two years are different.
+    # Only warn when:
+    # 1. InvoiceDescription has a vintage year
+    # 2. MatchedFullSKU has a vintage year
+    # 3. The two years are different
     if invoice_vintage and sku_vintage and invoice_vintage != sku_vintage:
         return f"Vintage mismatch: invoice has {invoice_vintage} but matched SKU has {sku_vintage}"
 
@@ -258,11 +264,11 @@ if uploaded_file is not None:
                 matched_records = invoice_data["MatchedFullSKU"].notna().sum()
                 unmatched_records = invoice_data["MatchedFullSKU"].isna().sum()
 
-                suspicious_matches = invoice_data[
+                vintage_mismatches = invoice_data[
                     invoice_data["MatchWarning"].astype(str).str.strip() != ""
                 ]
 
-                suspicious_count = len(suspicious_matches)
+                vintage_mismatch_count = len(vintage_mismatches)
 
                 st.success("Matching complete.")
 
@@ -270,16 +276,16 @@ if uploaded_file is not None:
                 col1.metric("Total Records", total_records)
                 col2.metric("Matched Records", matched_records)
                 col3.metric("Unmatched Records", unmatched_records)
-                col4.metric("Vintage Warnings", suspicious_count)
+                col4.metric("Vintage Mismatches", vintage_mismatch_count)
 
-                if suspicious_count > 0:
+                if vintage_mismatch_count > 0:
                     st.warning(
-                        f"{suspicious_count} vintage mismatch(es) found. "
+                        f"{vintage_mismatch_count} vintage mismatch(es) found. "
                         "Review these before using the final file."
                     )
 
                     st.subheader("Vintage Mismatch Warnings")
-                    st.dataframe(suspicious_matches, use_container_width=True)
+                    st.dataframe(vintage_mismatches, use_container_width=True)
                 else:
                     st.success("No vintage mismatches found.")
 
@@ -303,4 +309,3 @@ if uploaded_file is not None:
 
     except Exception as e:
         st.error(f"Something went wrong: {e}")
-        
